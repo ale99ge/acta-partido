@@ -6,7 +6,6 @@ name: Publicar la PWA en GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ["www/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

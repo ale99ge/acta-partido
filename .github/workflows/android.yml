@@ -6,7 +6,6 @@ name: Compilar APK de Android
 on:
   push:
     branches: [main]
-    paths: ["www/**", "capacitor.config.json", "package.json", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 jobs:

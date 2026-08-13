@@ -6,7 +6,7 @@ inicial y tiene descanso entre partes.
 
 Funciona en PC y en Android, sin conexión, y no manda tus datos a ningún sitio.
 
-- **Web:** `https://TU-USUARIO.github.io/acta-partido/`
+- **Web:** `https://ale99ge.github.io/acta-partido/`
 - **APK:** pestaña *Actions* → *Compilar APK de Android* → artefacto `acta-partido-apk`
 - **PC:** doble clic en `Acta-PC.cmd`
 

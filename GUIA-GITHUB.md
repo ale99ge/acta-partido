@@ -100,7 +100,7 @@ Ve a la pestaña **Actions**: verás *Publicar la PWA en GitHub Pages* ejecután
 punto se ponga verde (uno o dos minutos), tu app está en:
 
 ```
-https://TU-USUARIO.github.io/acta-partido/
+https://ale99ge.github.io/acta-partido/
 ```
 
 Ese es el enlace que pasas al equipo. En Android: Chrome → menú → *Añadir a pantalla de inicio*.
