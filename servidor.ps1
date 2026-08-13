@@ -1,4 +1,4 @@
-# Servidor local mínimo para Acta de Partido.
+﻿# Servidor local mínimo para Acta de Partido.
 # Sirve la carpeta www en http://localhost:8777 sin instalar nada.
 # Hace falta porque el navegador solo concede el micrófono a páginas servidas
 # por http/https, no a archivos abiertos con doble clic (file://).
