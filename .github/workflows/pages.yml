@@ -1,0 +1,41 @@
+name: Publicar la PWA en GitHub Pages
+
+# Cada vez que subes cambios a main, la app queda publicada en
+# https://TU-USUARIO.github.io/acta-partido/  y tus compañeros la tienen
+# actualizada con solo recargar.
+on:
+  push:
+    branches: [main]
+    paths: ["www/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Si lanzas dos despliegues seguidos, gana el último
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Pages
+        uses: actions/configure-pages@v5
+
+      - name: Empaquetar la carpeta www
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./www
+
+      - name: Desplegar
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,15 @@
+{
+  "appId": "com.alexg.actapartido",
+  "appName": "Acta de Partido",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0b1220"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 400,
+      "backgroundColor": "#0b1220"
+    }
+  }
+}

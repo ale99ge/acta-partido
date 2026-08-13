@@ -1,0 +1,27 @@
+# Dependencias
+node_modules/
+package-lock.json
+
+# Proyecto nativo generado por Capacitor (se regenera con `npx cap add android`)
+android/
+ios/
+
+# Compilaciones
+*.apk
+*.aab
+*.keystore
+*.jks
+dist/
+build/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# Registros
+*.log
+npm-debug.log*

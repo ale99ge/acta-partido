@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b1220">
+<title>Acta de Partido</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="tb-left">
+    <button class="icon-btn" id="btnMatches" title="Partidos" aria-label="Partidos">&#9776;</button>
+    <div class="match-id">
+      <div class="teams" id="tbTeams">Local &mdash; Visitante</div>
+      <div class="meta" id="tbMeta">Sin partido</div>
+    </div>
+  </div>
+  <div class="tb-right">
+    <div class="clocks">
+      <div class="clock" id="tbClock">00:00</div>
+      <div class="vclock">v&iacute;deo <span id="tbVideoClock">00:00:00</span></div>
+    </div>
+    <button class="play-btn" id="btnClock" aria-label="Iniciar / pausar">&#9654;</button>
+  </div>
+</header>
+
+<div class="periodbar" id="periodBar"></div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-view="capture">Captura</button>
+  <button class="tab" data-view="events">Eventos <span class="badge" id="evCount">0</span></button>
+  <button class="tab" data-view="setup">Ajustes</button>
+  <button class="tab" data-view="export">Exportar</button>
+</nav>
+
+<main>
+
+  <!-- ============ CAPTURA ============ -->
+  <section class="view active" id="view-capture">
+
+    <div class="card sync-warn hidden" id="syncWarn">
+      <strong>Sincroniza el v&iacute;deo</strong>
+      <p>Indica en Ajustes el minuto exacto del v&iacute;deo en el que empieza cada parte para que cada jugada tenga tambi&eacute;n su minuto real de v&iacute;deo.</p>
+    </div>
+
+    <div class="mic-wrap">
+      <button id="btnMic" class="mic" aria-label="Grabar nota de voz">
+        <span class="mic-ico">&#127908;</span>
+        <span class="mic-label">Mantener o pulsar<br>para dictar</span>
+      </button>
+      <div class="mic-stamp" id="micStamp"></div>
+    </div>
+
+    <div class="transcript" id="transcript" aria-live="polite">
+      <span class="ph">Aqu&iacute; aparecer&aacute; lo que dictes&hellip;</span>
+    </div>
+
+    <div class="row gap">
+      <button class="btn ghost grow" id="btnManual">&#9997;&#65039; Escribir nota</button>
+      <button class="btn ghost grow" id="btnAtVideo">&#127916; A&ntilde;adir por minuto de v&iacute;deo</button>
+    </div>
+
+    <h3 class="section-h">Contexto de la pr&oacute;xima jugada</h3>
+    <div class="row gap wrap" id="ctxBar"></div>
+
+    <h3 class="section-h">Atajos r&aacute;pidos</h3>
+    <div class="chips" id="quickTags"></div>
+
+    <h3 class="section-h">&Uacute;ltimas jugadas</h3>
+    <div id="recentList" class="events"></div>
+  </section>
+
+  <!-- ============ EVENTOS ============ -->
+  <section class="view" id="view-events">
+    <div class="filters">
+      <input type="search" id="fltText" placeholder="Buscar en las notas&hellip;">
+      <div class="row gap wrap">
+        <select id="fltPeriod"><option value="">Todas las partes</option></select>
+        <select id="fltTeam"><option value="">Ambos equipos</option><option value="home">Local</option><option value="away">Visitante</option></select>
+        <select id="fltTag"><option value="">Todas las etiquetas</option></select>
+        <select id="fltRating"><option value="">Toda valoraci&oacute;n</option><option value="1">Positivas</option><option value="-1">Negativas</option><option value="0">Neutras</option></select>
+      </div>
+    </div>
+    <div id="eventsList" class="events"></div>
+  </section>
+
+  <!-- ============ AJUSTES ============ -->
+  <section class="view" id="view-setup">
+
+    <div class="card">
+      <h2>Partido</h2>
+      <div class="grid2">
+        <label>Equipo local<input id="cfgHomeName" type="text" placeholder="Local"></label>
+        <label>Equipo visitante<input id="cfgAwayName" type="text" placeholder="Visitante"></label>
+        <label>Competici&oacute;n<input id="cfgCompetition" type="text" placeholder="Liga / Jornada"></label>
+        <label>Fecha<input id="cfgDate" type="date"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Sincron&iacute;a con el v&iacute;deo</h2>
+      <p class="hint">Pon el v&iacute;deo original en el instante del pitido inicial de cada parte y copia aqu&iacute; ese tiempo. Todas las jugadas mostrar&aacute;n a la vez el minuto de partido y el minuto real del v&iacute;deo. Puedes cambiarlo cuando quieras: se recalcula todo.</p>
+      <div id="periodsCfg"></div>
+      <div class="row gap wrap">
+        <button class="btn ghost" id="btnAddPeriod">+ A&ntilde;adir pr&oacute;rroga</button>
+        <button class="btn ghost" id="btnTestSync">Comprobar conversi&oacute;n</button>
+      </div>
+      <div id="syncTest" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <h2>Plantillas</h2>
+      <div class="roster-tabs">
+        <button class="rt active" data-side="home">Local</button>
+        <button class="rt" data-side="away">Visitante</button>
+      </div>
+      <div class="row gap">
+        <input type="text" id="newPlayerNum" inputmode="numeric" placeholder="N&ordm;" style="max-width:80px">
+        <input type="text" id="newPlayerName" placeholder="Nombre del jugador" class="grow">
+        <button class="btn" id="btnAddPlayer">A&ntilde;adir</button>
+      </div>
+      <div id="rosterList" class="roster"></div>
+      <p class="hint">Tambi&eacute;n puedes pegar una plantilla completa: una l&iacute;nea por jugador con el formato <code>10 Nombre</code>.</p>
+      <textarea id="bulkRoster" rows="3" placeholder="1 Portero&#10;4 Central&#10;10 Mediapunta"></textarea>
+      <button class="btn ghost" id="btnBulkRoster">Importar l&iacute;neas</button>
+    </div>
+
+    <div class="card">
+      <h2>Etiquetas</h2>
+      <div id="tagsCfg" class="chips"></div>
+      <div class="row gap">
+        <input type="text" id="newTag" placeholder="Nueva etiqueta" class="grow">
+        <button class="btn" id="btnAddTag">A&ntilde;adir</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Preferencias</h2>
+      <label class="switch"><input type="checkbox" id="prefAutoSave" checked> Guardar la jugada autom&aacute;ticamente al terminar de dictar</label>
+      <label class="switch"><input type="checkbox" id="prefWakeLock" checked> Mantener la pantalla encendida durante el partido</label>
+      <label class="switch"><input type="checkbox" id="prefBeep" checked> Se&ntilde;al sonora al empezar y acabar de dictar</label>
+      <label>Idioma del dictado
+        <select id="prefLang">
+          <option value="es-ES">Espa&ntilde;ol (Espa&ntilde;a)</option>
+          <option value="es-MX">Espa&ntilde;ol (Latinoam&eacute;rica)</option>
+          <option value="ca-ES">Catal&agrave;</option>
+          <option value="en-US">English (US)</option>
+        </select>
+      </label>
+      <div class="row gap wrap" style="margin-top:12px">
+        <button class="btn ghost" id="btnNewMatch">Nuevo partido</button>
+        <button class="btn ghost" id="btnImportJson">Importar copia (.json)</button>
+        <button class="btn danger" id="btnDeleteMatch">Borrar este partido</button>
+      </div>
+      <p class="hint" id="engineInfo"></p>
+    </div>
+  </section>
+
+  <!-- ============ EXPORTAR ============ -->
+  <section class="view" id="view-export">
+    <div class="card">
+      <h2>Hoja de c&aacute;lculo</h2>
+      <p class="hint">Incluye minuto de partido y minuto real de v&iacute;deo de cada jugada.</p>
+      <label class="switch"><input type="checkbox" id="csvSemicolon" checked> Separador <code>;</code> (Excel en espa&ntilde;ol)</label>
+      <div class="row gap wrap">
+        <button class="btn" id="btnCsv">Descargar CSV</button>
+        <button class="btn ghost" id="btnXls">Descargar Excel (.xls)</button>
+        <button class="btn ghost" id="btnCopyTable">Copiar tabla</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Marcadores de v&iacute;deo</h2>
+      <p class="hint">Usan el tiempo real del v&iacute;deo original, listos para saltar a cada jugada.</p>
+      <label>Fotogramas por segundo (para editores)
+        <select id="expFps"><option>23.976</option><option>24</option><option selected>25</option><option>29.97</option><option>30</option><option>50</option><option>59.94</option><option>60</option></select>
+      </label>
+      <div class="row gap wrap">
+        <button class="btn" id="btnVtt">Cap&iacute;tulos WebVTT (.vtt)</button>
+        <button class="btn ghost" id="btnYt">Cap&iacute;tulos YouTube (.txt)</button>
+        <button class="btn ghost" id="btnMarkerCsv">Marcadores CSV (DaVinci/Premiere)</button>
+        <button class="btn ghost" id="btnEdl">Marcadores EDL</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Copia de seguridad</h2>
+      <div class="row gap wrap">
+        <button class="btn ghost" id="btnJson">Descargar .json</button>
+        <button class="btn ghost" id="btnCopyText">Copiar informe de texto</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Resumen</h2>
+      <div id="summary"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ MODALES ============ -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" id="modalCard"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="filePicker" accept="application/json,.json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>

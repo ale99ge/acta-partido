@@ -1,0 +1,22 @@
+{
+  "name": "acta-partido",
+  "version": "2.0.0",
+  "description": "Registro de jugadas de fútbol por voz, con minuto de partido y minuto real del vídeo original.",
+  "private": true,
+  "scripts": {
+    "test": "node test/test.js",
+    "serve": "npx --yes serve www -l 8777",
+    "android:init": "npx cap add android",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:apk": "npx cap sync android && cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "jsdom": "^26.0.0"
+  }
+}

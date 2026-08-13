@@ -1,0 +1,62 @@
+name: Compilar APK de Android
+
+# Genera el .apk sin que tengas que instalar nada en tu PC.
+# Lánzalo a mano desde la pestaña "Actions" del repositorio, o deja que
+# se dispare solo cuando cambies la app.
+on:
+  push:
+    branches: [main]
+    paths: ["www/**", "capacitor.config.json", "package.json", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: SDK de Android
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Crear y sincronizar el proyecto Android
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+
+      - name: Declarar el permiso de micrófono
+        run: |
+          f=android/app/src/main/AndroidManifest.xml
+          grep -q "RECORD_AUDIO" $f || sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n\n    <application#' $f
+          grep -q "<queries>" $f || sed -i 's#</manifest>#    <queries><intent><action android:name="android.speech.RecognitionService" /></intent></queries>\n</manifest>#' $f
+          cat $f
+
+      - name: Compilar APK de depuración
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Renombrar con la fecha
+        run: |
+          mkdir -p salida
+          cp android/app/build/outputs/apk/debug/app-debug.apk "salida/acta-partido-$(date +%Y%m%d-%H%M).apk"
+          ls -lh salida
+
+      - name: Publicar el APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: acta-partido-apk
+          path: salida/*.apk
+          if-no-files-found: error
+          retention-days: 90
