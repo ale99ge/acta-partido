@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const WWW = path.join(__dirname, "..", "acta-partido", "www");
+const WWW = path.join(__dirname, "..", "www");
 const html = fs.readFileSync(path.join(WWW, "index.html"), "utf8");
 
 let fails = 0, passes = 0;
