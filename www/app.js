@@ -6,6 +6,11 @@
 (function () {
 "use strict";
 
+/* Se muestra en Ajustes. Subirlo en cada cambio de www/, junto con CACHE en
+   sw.js: sirve para comprobar de un vistazo qué versión está ejecutando de
+   verdad el navegador, que con el service worker de por medio no es obvio. */
+var APP_VERSION = "2.1.0";
+
 /* ---------------- utilidades ---------------- */
 var $ = function (id) { return document.getElementById(id); };
 var pad = function (n) { return String(n).padStart(2, "0"); };
@@ -406,7 +411,15 @@ function tagLabel(id) {
 
 /* ---------------- reconocimiento de voz ---------------- */
 var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-var rec = null, listening = false, keepAlive = false, stampP = null, stampE = null;
+
+/* listening: hay una sesión viva. Se pone de forma SÍNCRONA, nunca en onstart
+              (que tarda cientos de ms y deja una ventana de carrera).
+   wantRec:   el usuario QUIERE estar grabando. Solo lo apaga stopRec(), así
+              que un error recuperable del motor no puede cortar una nota.
+   closing:   hemos pedido stop() y esperamos la última entrega del motor.
+   recGen:    generación. Handlers y temporizadores de generaciones viejas
+              quedan invalidados y no pueden tocar nada. */
+var rec = null, listening = false, wantRec = false, closing = false, recGen = 0;
 
 function speechAvailable() { return !!SR; }
 function isIOS() {
@@ -430,31 +443,151 @@ function paintMicLabel() {
   $("btnMic").querySelector(".mic-label").innerHTML = listening ? micListeningLabel() : micIdleLabel();
 }
 
-/* ---- buffer de resultados finales: el motor de reconocimiento a veces
-   reenvía el mismo resultado marcado "final" varias veces con la
-   transcripción cada vez más larga antes de cerrar la frase de verdad.
-   Nos quedamos siempre con la revisión más reciente y solo confirmamos la
-   jugada cuando el texto deja de cambiar o cuando aparece contenido en un
-   resultado distinto (señal de que el anterior ya cerró). ---- */
-var finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
-var finalTimer = null;
-var FINAL_STABLE_MS = 500;
-function resetFinalBuf() {
-  clearTimeout(finalTimer); finalTimer = null;
-  finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
+/* ---- nota en curso -------------------------------------------------------
+   No intentamos deducir del motor dónde acaba una frase: Chrome parte un
+   mismo enunciado en varios resultados "final", uno por cada micropausa.
+   En vez de eso acumulamos por índice de resultado (escribir el mismo índice
+   es idempotente, así que un reenvío nunca duplica) y la nota la cierra el
+   USUARIO: al soltar el botón en modo "hold", o tras una pausa clara en
+   modo "toggle".
+   Cuando el motor reinicia su numeración —porque corta la sesión, o porque
+   entrega solo lo nuevo en vez de la lista acumulada— los índices vuelven a
+   empezar en 0: entonces el texto ya cerrado pasa a recCarry. ---- */
+var recFinals = [];      // texto final por índice, dentro del tramo actual
+var recDoneText = "";    // parte del tramo que ya se guardó como jugada
+var recCarry = "";       // texto de tramos ya cerrados de la MISMA nota
+var recInterim = "";     // último parcial, solo para pintar
+var recSeen = 0;         // mayor results.length visto en el tramo
+var recLastText = "";    // último texto visto, para no rearmar la pausa en balde
+var noteStamp = null;    // {p,e} del PRIMER habla de la nota
+var lastOnset = null;    // {p,e} del último onspeechstart aún sin consumir
+var cmdStamp = null;     // sello visible para voiceCommand (comando "marca")
+var pauseTimer = null, closeTimer = null;
+var NOTE_PAUSE_MS = 1500;   // solo "toggle": silencio que separa dos notas
+var CLOSE_MS = 1500;        // red de seguridad por si onend no llega tras stop()
+
+function stampNow() { return { p: match.activePeriod, e: elapsedNow(activeP()) }; }
+function paintStamp() {
+  if (!noteStamp) { $("micStamp").textContent = ""; return; }
+  var p = noteStamp.p, e = noteStamp.e;
+  $("micStamp").textContent = "sellado en " + minLabel(p, e) +
+    (match.periods[p] && match.periods[p].videoStartSec != null
+      ? "  ·  vídeo " + fmtHMS(match.periods[p].videoStartSec + e) : "");
 }
-function commitFinalBuf() {
-  clearTimeout(finalTimer); finalTimer = null;
-  if (finalBuf.idx === -1) return;
-  var txt = finalBuf.text.trim();
-  var savedP = finalBuf.stampP, savedE = finalBuf.stampE;
-  finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
-  if (!txt) return;
-  if (!voiceCommand(txt)) {
-    var t = txt.charAt(0).toUpperCase() + txt.slice(1);
-    if (prefs.autoSave) addEvent(t, savedE, savedP);
-    else pendingDraft(t, savedE, savedP);
+/* ¿"b" es "a" con más cosas dichas después? Se compara normalizado porque el
+   motor añade mayúsculas y puntuación al dar una frase por definitiva. */
+function extiende(a, b) {
+  var na = norm(a), nb = norm(b);
+  if (!na) return true;
+  if (nb === na) return true;
+  return nb.indexOf(na + " ") === 0;
+}
+/* Une los resultados de un tramo. NO se pueden concatenar sin más: hay motores
+   que en cada resultado nuevo reenvían TODO lo dicho hasta ese momento, así que
+   sumarlos repetiría el texto una vez por pausa. Si un resultado continúa al
+   anterior lo sustituye; si es contenido nuevo, se añade. Así sale lo mismo
+   entregue el motor trozos sueltos o el texto acumulado. */
+function foldFinals(arr) {
+  var acc = "", i, t;
+  for (i = 0; i < arr.length; i++) {
+    t = (arr[i] || "").trim();
+    if (!t) continue;
+    if (!acc) { acc = t; continue; }
+    if (norm(t) === norm(acc)) continue;           // reenvío idéntico
+    if (extiende(acc, t)) { acc = t; continue; }   // reenvía lo anterior y más
+    acc += " " + t;                                // trozo nuevo de verdad
   }
+  return acc;
+}
+/* quita del texto del tramo la parte que ya se guardó como jugada */
+function sinLoYaGuardado(full, done) {
+  if (!done) return full;
+  var fw = full.split(/\s+/).filter(Boolean);
+  var dw = done.split(/\s+/).filter(Boolean);
+  var i = 0;
+  while (i < dw.length && i < fw.length && norm(fw[i]) === norm(dw[i])) i++;
+  return fw.slice(i).join(" ");
+}
+function pendingText() {
+  var resto = sinLoYaGuardado(foldFinals(recFinals), recDoneText);
+  var t = recCarry;
+  if (resto) t += (t ? " " : "") + resto;
+  return t.replace(/\s+/g, " ").trim();
+}
+/* el motor va a reutilizar los índices: cerramos el tramo sin cerrar la nota */
+function rollSegment() {
+  recCarry = pendingText();
+  recFinals = []; recDoneText = ""; recSeen = 0; recInterim = "";
+}
+function resetPending() {
+  clearTimeout(pauseTimer); pauseTimer = null;
+  recFinals = []; recDoneText = ""; recCarry = ""; recInterim = ""; recSeen = 0; recLastText = "";
+  noteStamp = null; lastOnset = null;
+}
+function commitPending() {
+  clearTimeout(pauseTimer); pauseTimer = null;
+  var txt = pendingText(), st = noteStamp;
+  /* si el usuario ya ha empezado la nota siguiente, su sello no se pierde */
+  var siguiente = (lastOnset && lastOnset !== noteStamp) ? lastOnset : null;
+  /* no borramos recFinals: la sesión sigue viva y el motor volverá a
+     enviarlos. Anotamos qué parte del tramo ya se ha guardado. */
+  recDoneText = foldFinals(recFinals); recCarry = ""; recLastText = "";
+  noteStamp = null; lastOnset = siguiente;
+  paintStamp(); setTranscript("", true); highlightTags("");
+  if (!txt) return;
+  cmdStamp = st;
+  var esComando = voiceCommand(txt);
+  cmdStamp = null;
+  if (esComando) return;
+  var t = txt.charAt(0).toUpperCase() + txt.slice(1);
+  var e = st ? st.e : null, p = st ? st.p : null;
+  /* con autoSave desactivado abriríamos el editor, pero si seguimos grabando
+     taparía el dictado (y machacaría el editor que hubiera abierto) */
+  if (prefs.autoSave || listening || closing) {
+    addEvent(t, e, p);
+    if (!prefs.autoSave) toast("Jugada guardada, la editas al parar");
+  } else pendingDraft(t, e, p);
+}
+
+/* Absorbe la lista de resultados. Dos señales de que el motor ha reiniciado
+   su numeración: la lista encoge, o un índice ya cerrado vuelve con un texto
+   que no es ni ampliación ni recorte del que teníamos. */
+function absorbResults(list) {
+  var i, r, t, nuevo = (list.length < recSeen);
+  for (i = 0; !nuevo && i < list.length; i++) {
+    r = list[i];
+    if (!r || !r.isFinal || recFinals[i] === undefined) continue;
+    t = (r[0] && r[0].transcript) || "";
+    if (norm(t) === norm(recFinals[i])) continue;   // reenvío idéntico
+    if (extiende(recFinals[i], t)) continue;        // el motor amplía ese final
+    if (extiende(t, recFinals[i])) continue;        // ...o lo acorta
+    nuevo = true;
+  }
+  if (nuevo) rollSegment();
+  if (list.length > recSeen) recSeen = list.length;
+  recInterim = "";
+  for (i = 0; i < list.length; i++) {
+    r = list[i];
+    if (!r) continue;
+    t = (r[0] && r[0].transcript) || "";
+    if (r.isFinal) recFinals[i] = t;
+    else recInterim += (recInterim ? " " : "") + t;
+  }
+}
+
+/* deja una instancia incapaz de tocar nada y la aborta */
+function killRec(r) {
+  if (!r) return;
+  r.onstart = r.onspeechstart = r.onresult = r.onerror = r.onend = null;
+  try { if (r.abort) r.abort(); else r.stop(); } catch (e) {}
+}
+function finishClose() {
+  clearTimeout(closeTimer); closeTimer = null;
+  clearTimeout(pauseTimer); pauseTimer = null;
+  closing = false; listening = false; wantRec = false;
+  commitPending();
+  $("btnMic").classList.remove("rec");
+  paintMicLabel();
 }
 
 function startRec() {
@@ -467,45 +600,60 @@ function startRec() {
       "Mientras tanto puedes usar <b>Escribir nota</b>, que registra el minuto igual.</p>");
     return;
   }
-  rec = new SR();
-  rec.lang = prefs.lang; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
-  rec.onstart = function () {
-    listening = true; keepAlive = true;
-    resetFinalBuf();
-    $("btnMic").classList.add("rec");
-    paintMicLabel();
-    setTranscript("", true);
-    beep(1100, 70);
+  if (listening) return;              // ya grabando: nunca dos instancias
+  if (closing) finishClose();         // cierra ya la nota anterior
+  killRec(rec); rec = null;
+
+  var myGen = ++recGen;               // invalida handlers y timers anteriores
+  clearTimeout(pauseTimer); pauseTimer = null;
+  clearTimeout(closeTimer); closeTimer = null;
+  resetPending();
+
+  listening = true; wantRec = true; closing = false;
+  $("btnMic").classList.add("rec"); paintMicLabel();   // respuesta inmediata
+  paintStamp(); setTranscript("", true); highlightTags("");
+
+  var r = new SR(), reinicio = false, cortes = 0, arrancado = 0;
+  rec = r;
+  r.lang = prefs.lang; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+
+  r.onstart = function () {
+    if (myGen !== recGen) return;
+    arrancado = Date.now();
+    if (!reinicio) beep(1100, 70);    // sin pitido en los reinicios internos
   };
-  rec.onspeechstart = function () {
-    stampP = match.activePeriod;
-    stampE = elapsedNow(activeP());
-    $("micStamp").textContent = "sellado en " + minLabel(stampP, stampE) +
-      (match.periods[stampP].videoStartSec == null ? "" : "  ·  vídeo " + fmtHMS(match.periods[stampP].videoStartSec + stampE));
+  r.onspeechstart = function () {
+    if (myGen !== recGen) return;
+    lastOnset = stampNow();
+    if (!noteStamp) { noteStamp = lastOnset; paintStamp(); }   // solo el PRIMERO
   };
-  rec.onresult = function (ev) {
-    var interim = "";
-    for (var i = ev.resultIndex; i < ev.results.length; i++) {
-      var r = ev.results[i];
-      if (finalBuf.idx !== -1 && i !== finalBuf.idx) commitFinalBuf();
-      if (r.isFinal) {
-        if (finalBuf.idx === -1) {
-          finalBuf.idx = i;
-          finalBuf.stampP = stampP; finalBuf.stampE = stampE;
-          stampP = null; stampE = null;
-          $("micStamp").textContent = "";
-        }
-        finalBuf.text = r[0].transcript;
-        clearTimeout(finalTimer);
-        finalTimer = setTimeout(commitFinalBuf, FINAL_STABLE_MS);
-      } else interim += r[0].transcript;
+  r.onresult = function (ev) {
+    if (myGen !== recGen) return;
+    absorbResults(ev.results || []);
+    var visto = pendingText();
+    /* respaldo para motores que no disparan onspeechstart */
+    if (!noteStamp && (visto || recInterim)) {
+      noteStamp = lastOnset || stampNow();
+      paintStamp();
     }
-    setTranscript(interim, !interim);
-    highlightTags(interim);
+    /* en "hold" la nota la cierra el usuario al soltar; en "toggle" la cierra
+       una pausa, y el temporizador solo se rearma si de verdad hay texto nuevo */
+    var completo = visto + (recInterim ? " " + recInterim : "");
+    if (prefs.micMode !== "hold" && !closing && completo !== recLastText) {
+      clearTimeout(pauseTimer);
+      pauseTimer = setTimeout(function () {
+        if (myGen !== recGen) return;
+        commitPending();
+      }, NOTE_PAUSE_MS);
+    }
+    recLastText = completo;
+    setTranscript(completo, !completo);
+    highlightTags(completo);
   };
-  rec.onerror = function (e) {
+  r.onerror = function (e) {
+    if (myGen !== recGen) return;
+    /* recuperables: no cierran la nota, onend rearrancará mientras wantRec siga */
     if (e.error === "no-speech" || e.error === "aborted") return;
-    keepAlive = false;
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       modalInfo("Micrófono bloqueado",
         "<p>El navegador ha denegado el micrófono.</p><p>En el móvil: ajustes del sitio &rarr; permitir micrófono. " +
@@ -516,24 +664,56 @@ function startRec() {
     } else toast("Fallo del micrófono: " + e.error);
     stopRec();
   };
-  rec.onend = function () {
-    commitFinalBuf();
-    if (keepAlive && listening) { try { rec.start(); } catch (err) {} }
-    else stopRec();
+  r.onend = function () {
+    if (myGen !== recGen) return;
+    if (wantRec && listening && !closing) {
+      cortes = (Date.now() - arrancado < 400) ? cortes + 1 : 0;
+      if (cortes < 6) {
+        /* NO cerramos aquí el tramo: hay motores que tras rearrancar siguen
+           entregando la lista acumulada, y darla por cerrada a ciegas hacía
+           que ese texto contase dos veces. absorbResults ya detecta si la
+           numeración se ha reiniciado de verdad, mirando lo que llega. */
+        reinicio = true;
+        try { r.start(); return; } catch (err) {}
+      } else toast("El dictado se corta solo; vuelve a pulsar");
+    }
+    finishClose();
   };
-  try { rec.start(); } catch (err) {}
+
+  try { r.start(); }
+  catch (err) {                       // si no arranca, no dejar el botón colgado
+    recGen++;
+    rec = null; listening = false; wantRec = false; closing = false;
+    resetPending();
+    $("btnMic").classList.remove("rec"); paintMicLabel();
+    setTranscript("", true);
+    toast("No se ha podido abrir el micrófono");
+  }
 }
+/* No usamos abort(): stop() deja que el motor entregue la cola de audio ya
+   grabada. La nota se cierra en onend; el temporizador es solo la red. */
 function stopRec() {
-  commitFinalBuf();
-  listening = false; keepAlive = false;
-  if (rec) { try { rec.stop(); } catch (e) {} }
+  clearTimeout(pauseTimer); pauseTimer = null;
+  if (!listening && !closing) {
+    $("btnMic").classList.remove("rec"); paintMicLabel();
+    return;
+  }
+  listening = false; wantRec = false; closing = true;
   $("btnMic").classList.remove("rec");
-  paintMicLabel();
-  $("micStamp").textContent = "";
-  setTranscript("", true);
-  highlightTags("");
+  paintMicLabel();                    // el botón responde ya
   beep(520, 70);
+  if (!rec) { finishClose(); return; }
+  try { rec.stop(); } catch (e) {}
+  if (!closing) return;               // onend ya ha cerrado de forma síncrona
+  var myGen = recGen;
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(function () {
+    if (myGen !== recGen) return;
+    finishClose();
+  }, CLOSE_MS);
 }
+/* cierre inmediato sin esperar la cola: al cambiar de partido, idioma o modo */
+function stopRecNow() { stopRec(); if (closing) finishClose(); }
 function setTranscript(text, placeholder) {
   var el = $("transcript");
   if (placeholder || !text) {
@@ -558,7 +738,11 @@ function voiceCommand(raw) {
     if (match.events.length) { match.events.pop(); save(); renderAll(); beep(300, 140); }
     return true;
   }
-  if (/^(marca|marcar|marcalo|ojo|apunta esto)$/.test(s)) { addEvent("Marca", stampE, stampP); return true; }
+  if (/^(marca|marcar|marcalo|ojo|apunta esto)$/.test(s)) {
+    /* cmdStamp conserva el minuto en que se empezó a hablar */
+    addEvent("Marca", cmdStamp ? cmdStamp.e : null, cmdStamp ? cmdStamp.p : null);
+    return true;
+  }
   if (/^(local|equipo local|nuestro|nosotros)$/.test(s)) { ctx.side = "home"; renderCtxBar(); return true; }
   if (/^(visitante|equipo visitante|rival|ellos)$/.test(s)) { ctx.side = "away"; renderCtxBar(); return true; }
   if (/^(sin equipo|neutro|ninguno)$/.test(s)) { ctx.side = null; ctx.playerId = null; renderCtxBar(); return true; }
@@ -765,7 +949,8 @@ function renderSetup() {
   });
   renderRoster(); renderTagsCfg();
   $("engineInfo").innerHTML = "Dictado: " + (speechAvailable() ? "disponible en este navegador" :
-    "no disponible aquí (usa Chrome o Edge)") + ". Los datos se guardan en este dispositivo.";
+    "no disponible aquí (usa Chrome o Edge)") + ". Los datos se guardan en este dispositivo." +
+    "<br>Versión <b>" + APP_VERSION + "</b>";
 }
 function renderRoster() {
   [].forEach.call(document.querySelectorAll(".rt"), function (b) {
@@ -1037,14 +1222,14 @@ function openMatches() {
         save(true); renderAll(); fillFilters(); closeModal();
         return;
       }
-      pauseActivePeriod();
+      stopRecNow(); pauseActivePeriod();
       match = matches.filter(function (m) { return m.id === el.dataset.id; })[0];
       migrate(match); save(true); renderAll(); fillFilters(); closeModal();
     };
   });
   $("mmC").onclick = closeModal;
   $("mmNew").onclick = function () {
-    pauseActivePeriod();
+    stopRecNow(); pauseActivePeriod();
     match = newMatch(); matches.push(match);
     save(true); renderAll(); fillFilters(); closeModal();
     toast("Partido nuevo creado");
@@ -1203,19 +1388,29 @@ $("btnGoSync").onclick = focusSyncSetting;
 
 /* micrófono: el gesto activo depende de prefs.micMode, no de cuánto se
    mantenga pulsado (ver preferencia "Modo de grabación" en Ajustes) */
-var MIC = $("btnMic");
+var MIC = $("btnMic"), micPointer = null;
 MIC.addEventListener("pointerdown", function (e) {
   if (!SR || prefs.micMode !== "hold") return;
+  if (micPointer !== null) return;              // segundo dedo: ignorar
+  micPointer = e.pointerId;
   try { MIC.setPointerCapture(e.pointerId); } catch (err) {}
-  if (!listening) startRec();
+  startRec();
 });
-MIC.addEventListener("pointerup", function () {
+/* al soltar se para sin margen: la cola de audio ya grabada la entrega el
+   propio motor entre stop() y onend, que es más fiable que un temporizador */
+function micRelease(e) {
+  if (micPointer === null || (e && e.pointerId !== micPointer)) return;
+  micPointer = null;
+  stopRec();
+}
+MIC.addEventListener("pointerup", function (e) {
   if (!SR) { startRec(); return; }
-  if (prefs.micMode === "hold") { if (listening) setTimeout(stopRec, 900); }
-  else { listening ? stopRec() : startRec(); }
+  if (prefs.micMode === "hold") { micRelease(e); return; }
+  if (listening || closing) stopRec(); else startRec();
 });
-MIC.addEventListener("pointercancel", function () {
-  if (SR && prefs.micMode === "hold" && listening) stopRec();
+MIC.addEventListener("pointercancel", function (e) {
+  if (!SR || prefs.micMode !== "hold") return;
+  micRelease(e);
 });
 
 $("btnAddPeriod").onclick = function () {
@@ -1278,18 +1473,23 @@ $("prefWakeLock").onchange = function () { prefs.wakeLock = this.checked; save()
 $("prefBeep").onchange = function () { prefs.beep = this.checked; save(); };
 $("prefMicMode").onchange = function () {
   prefs.micMode = this.value; save();
-  if (listening) stopRec();
+  if (listening || closing) stopRecNow();
   paintMicLabel();
 };
-$("prefLang").onchange = function () { prefs.lang = this.value; save(); if (listening) { stopRec(); setTimeout(startRec, 300); } };
+$("prefLang").onchange = function () {
+  prefs.lang = this.value; save();
+  /* stopRecNow cierra de forma síncrona, así que se puede rearrancar ya */
+  if (listening || closing) { stopRecNow(); setTimeout(startRec, 100); }
+};
 $("csvSemicolon").onchange = function () { prefs.csvSemicolon = this.checked; save(); };
 $("expFps").onchange = function () { prefs.fps = parseFloat(this.value); save(); };
 
 $("btnNewMatch").onclick = function () {
-  pauseActivePeriod();
+  stopRecNow(); pauseActivePeriod();
   match = newMatch(); matches.push(match); save(true); renderAll(); fillFilters(); toast("Partido nuevo");
 };
 $("btnDeleteMatch").onclick = function () {
+  stopRecNow();
   if (!confirm("Se borra este partido y sus " + match.events.length + " jugadas. ¿Seguro?")) return;
   matches = matches.filter(function (m) { return m.id !== match.id; });
   if (!matches.length) matches.push(newMatch());
@@ -1305,7 +1505,7 @@ $("filePicker").onchange = function () {
       var list = Array.isArray(data) ? data : [data];
       var imported = list.map(function (m) { m.id = uid(); migrate(m); return m; });
       if (!imported.length) { toast("Archivo no válido"); return; }
-      pauseActivePeriod();
+      stopRecNow(); pauseActivePeriod();
       matches = matches.concat(imported);
       match = matches[matches.length - 1];
       save(true); renderAll(); fillFilters(); toast("Importado");
@@ -1343,11 +1543,16 @@ $("btnCopyText").onclick = function () { copyText(reportText()); toast("Informe 
 
 /* atajos de teclado */
 document.addEventListener("keydown", function (e) {
+  if (e.repeat) return;               // mantener la tecla no dispara una avalancha
   var tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
   if (e.key === "m" || e.key === "M") { e.preventDefault(); addEvent("Marca"); }
   if (e.code === "Space") { e.preventDefault(); toggleClock(); }
-  if (e.key === "v" || e.key === "V") { e.preventDefault(); listening ? stopRec() : startRec(); }
+  if (e.key === "v" || e.key === "V") {
+    e.preventDefault();
+    if (!$("modal").hidden) return;   // no dictar con un modal abierto
+    if (listening || closing) stopRec(); else startRec();
+  }
   if (e.key === "Escape") closeModal();
 });
 window.addEventListener("beforeunload", function () { save(true); });

@@ -105,7 +105,7 @@ Para instalarla: Safari → *Compartir* → *Añadir a pantalla de inicio*.
 ```bash
 npm install
 npm run serve          # servidor local en http://localhost:8777
-npm test               # 51 comprobaciones
+npm test               # 98 comprobaciones
 
 npx cap add android    # crear el proyecto nativo
 npx cap sync android

@@ -84,7 +84,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent2);outline
 .mic{width:180px;height:180px;border-radius:50%;border:3px solid var(--line);cursor:pointer;
   background:radial-gradient(circle at 50% 35%,#1d3355,#12203a);color:var(--txt);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  transition:transform .12s,box-shadow .2s,border-color .2s;user-select:none}
+  transition:transform .12s,box-shadow .2s,border-color .2s;user-select:none;
+  touch-action:none;-webkit-touch-callout:none}
 .mic .mic-label{font-size:17px;font-weight:700;color:var(--dim);text-align:center;line-height:1.35}
 .mic.rec{border-color:var(--bad);background:radial-gradient(circle at 50% 35%,#5a1b26,#2a0f16);
   animation:pulse 1.3s infinite}

@@ -14,7 +14,7 @@ pasada a velocidad normal dictando lo que ve, y una segunda a 0,5x solo sobre lo
 
 ## Estado
 
-- Aplicación funcional y probada (51 comprobaciones automáticas, todas en verde).
+- Aplicación funcional y probada (98 comprobaciones automáticas, todas en verde).
 - Repositorio Git iniciado, con tres commits y la etiqueta `v2.0`.
 - **Pendiente:** el `git push` inicial a GitHub. Requiere que Alejandro cree el repositorio
   y autorice con su cuenta. Se hace con `Subir-a-GitHub.cmd`.
@@ -49,7 +49,21 @@ GUIA-GITHUB.md          guía de Git y GitHub escrita para Alejandro
   El minuto de partido y el de vídeo se derivan al vuelo. Por eso, al corregir la sincronía,
   todas las jugadas ya registradas se recalculan solas. No romper esta propiedad.
 - **El minuto se sella al empezar a hablar** (`onspeechstart`), no al terminar la frase.
-  Es la característica que más valor da en uso real.
+  Es la característica que más valor da en uso real. Solo cuenta el **primer** arranque de voz
+  de la nota: las micropausas no deben pisar el sello.
+- **Un resultado `isFinal` NO es una frase.** El motor cierra un `isFinal` por cada micropausa,
+  así que deducir de él dónde acaba la nota parte las jugadas en trozos: fueron dos intentos
+  fallidos. Quien cierra la nota es el usuario — al soltar el botón en modo *mantener pulsado*,
+  o tras `NOTE_PAUSE_MS` de silencio en modo *pulsar*.
+- **Los resultados NO se pueden concatenar sin más.** En Chrome cada resultado nuevo reenvía
+  *todo lo dicho hasta ese momento*, no solo el trozo nuevo, así que sumarlos repite el texto una
+  vez por pausa (fue el tercer intento fallido). `foldFinals()` compara cada resultado con lo
+  acumulado: si lo continúa, lo sustituye; si es contenido nuevo, lo añade. Así da igual que el
+  motor entregue trozos sueltos o texto acumulado. Las comparaciones van por `norm()` porque el
+  motor añade mayúsculas y puntuación al dar una frase por definitiva.
+- **Nunca dos sesiones de reconocimiento a la vez.** `listening` se pone de forma síncrona
+  (no en `onstart`, que tarda cientos de ms) y cada instancia lleva un token de generación:
+  dos instancias en paralelo transcriben el mismo audio y duplican jugadas.
 - **iOS no tiene Web Speech API.** La app lo detecta y ofrece la nota manual con el minuto ya
   sellado, para dictar con el micrófono del teclado del sistema.
 
@@ -61,11 +75,15 @@ GUIA-GITHUB.md          guía de Git y GitHub escrita para Alejandro
 - Los `.ps1` van en **UTF-8 con BOM y CRLF**, los `.cmd` en CRLF sin BOM. Si no, Windows
   PowerShell falla al analizarlos y la ventana se cierra sin mensaje. Lo fija `.gitattributes`.
 - Antes de dar por buena cualquier modificación de `app.js`: `npm test`.
+- Al tocar cualquier archivo de `www/`, **subir `CACHE` en `sw.js` y `APP_VERSION` en `app.js`**.
+  El service worker sirve primero desde caché: si no se cambia ese nombre, los navegadores que
+  ya tienen la app siguen ejecutando la versión anterior y parece que el arreglo no ha
+  funcionado. `APP_VERSION` se ve en Ajustes y sirve para comprobarlo de un vistazo.
 
 ## Comandos
 
 ```bash
-npm test               # 51 comprobaciones (necesita jsdom)
+npm test               # 98 comprobaciones (necesita jsdom)
 npm run serve          # servidor local en http://localhost:8777
 npx cap sync android   # sincronizar el proyecto nativo
 ```

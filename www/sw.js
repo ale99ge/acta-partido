@@ -1,6 +1,9 @@
 /* Service worker: la app funciona sin conexión (salvo el dictado de voz,
    que en Chrome se procesa en servidores de Google y sí requiere internet). */
-var CACHE = "acta-v2-1";
+/* Subir este número en CADA cambio de www/: el service worker sirve primero
+   desde caché, así que si no cambia el nombre los navegadores que ya tienen
+   la app instalada siguen ejecutando la versión anterior. */
+var CACHE = "acta-v2-3";
 var ASSETS = [
   "./",
   "./index.html",
