@@ -131,24 +131,49 @@ var matches = [], match = null, prefs = Object.assign({}, DEFAULT_PREFS);
 
 function loadAll() {
   try { matches = JSON.parse(localStorage.getItem(LS_MATCHES) || "[]") || []; } catch (e) { matches = []; }
+  if (!Array.isArray(matches)) matches = [];
+  matches = matches.filter(function (m) {
+    if (!m || typeof m !== "object") return false;
+    try { migrate(m); return true; } catch (e) { return false; }
+  });
   try { prefs = Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(LS_PREFS) || "{}")); } catch (e) {}
   var cur = localStorage.getItem(LS_CUR);
   match = matches.filter(function (m) { return m.id === cur; })[0] || matches[0] || null;
   if (!match) { match = newMatch(); matches.push(match); }
-  migrate(match);
 }
+/* Normaliza un partido cargado de localStorage o importado de un .json:
+   completa campos que falten y descarta forma inválida en vez de dejar
+   que rendered/exportaciones exploten más tarde con datos a medias. */
 function migrate(m) {
-  if (!m.periods) m.periods = newMatch().periods;
+  if (!m.periods || !m.periods.length) m.periods = newMatch().periods;
   m.periods.forEach(function (p) {
     if (typeof p.elapsedSec !== "number") p.elapsedSec = 0;
     p.running = false; p.startedAt = null;
     if (p.videoStartSec === undefined) p.videoStartSec = null;
+    if (typeof p.durationMin !== "number" || p.durationMin <= 0) p.durationMin = 45;
+    if (typeof p.label !== "string" || !p.label) p.label = "Parte";
   });
-  if (typeof m.activePeriod !== "number") m.activePeriod = 0;
-  if (!m.tags || !m.tags.length) m.tags = DEFAULT_TAGS.slice();
-  if (!m.events) m.events = [];
-  if (!m.home) m.home = { name: "Local", players: [] };
-  if (!m.away) m.away = { name: "Visitante", players: [] };
+  if (typeof m.activePeriod !== "number" || !m.periods[m.activePeriod]) m.activePeriod = 0;
+  if (!Array.isArray(m.tags) || !m.tags.length) m.tags = DEFAULT_TAGS.slice();
+  if (!m.home || typeof m.home !== "object") m.home = { name: "Local", players: [] };
+  if (!m.away || typeof m.away !== "object") m.away = { name: "Visitante", players: [] };
+  if (!Array.isArray(m.home.players)) m.home.players = [];
+  if (!Array.isArray(m.away.players)) m.away.players = [];
+  if (typeof m.id !== "string" || !m.id) m.id = uid();
+  if (!Array.isArray(m.events)) m.events = [];
+  m.events = m.events.filter(function (e) { return e && typeof e === "object"; }).map(function (e) {
+    return {
+      id: (typeof e.id === "string" && e.id) ? e.id : uid(),
+      p: (typeof e.p === "number" && m.periods[e.p]) ? e.p : 0,
+      e: typeof e.e === "number" && e.e >= 0 ? e.e : 0,
+      side: (e.side === "home" || e.side === "away") ? e.side : null,
+      playerId: e.playerId || null,
+      tags: Array.isArray(e.tags) ? e.tags : [],
+      rating: (e.rating === 1 || e.rating === -1) ? e.rating : 0,
+      note: typeof e.note === "string" && e.note ? e.note : "Marca",
+      ts: typeof e.ts === "number" ? e.ts : Date.now()
+    };
+  });
 }
 var saveTimer = null;
 function save(now) {
@@ -237,10 +262,18 @@ function nudge(sec) {
   if (p.running) p.startedAt = Date.now();
   save(); paintClock();
 }
-function setPeriod(i) {
-  if (i === match.activePeriod) return;
+/* congela el cronómetro de la parte activa del partido actual, sumando el
+   tiempo real transcurrido a elapsedSec. Hay que llamarla siempre antes de
+   cambiar de partido (match) o de parte, si no el tiempo corrido mientras
+   estaba en marcha se pierde sin más. */
+function pauseActivePeriod() {
+  if (!match) return;
   var p = activeP();
   if (p.running) { p.elapsedSec = elapsedNow(p); p.running = false; p.startedAt = null; }
+}
+function setPeriod(i) {
+  if (i === match.activePeriod) return;
+  pauseActivePeriod();
   match.activePeriod = i;
   save(); paintClock(); renderPeriods(); renderCapture();
 }
@@ -267,7 +300,12 @@ function requestWakeLock() {
 }
 document.addEventListener("visibilitychange", function () {
   if (document.visibilityState === "visible" && match && activeP().running) requestWakeLock();
+  /* en móvil (Safari/PWA sobre todo) "beforeunload" no siempre llega a
+     tiempo si el sistema mata la app en segundo plano: forzamos guardado
+     aquí para no perder la última jugada dictada. */
+  if (document.visibilityState === "hidden" && match) save(true);
 });
+window.addEventListener("pagehide", function () { if (match) save(true); });
 
 /* ---------------- sonido ---------------- */
 var actx = null;
@@ -297,7 +335,7 @@ function detectTags(raw) {
   Object.keys(TAG_KEYS).forEach(function (tid) {
     if (!match.tags.some(function (t) { return t.id === tid; })) return;
     for (var i = 0; i < TAG_KEYS[tid].length; i++) {
-      if (s.indexOf(" " + TAG_KEYS[tid][i]) > -1) { found.push(tid); return; }
+      if (s.indexOf(" " + TAG_KEYS[tid][i] + " ") > -1) { found.push(tid); return; }
     }
   });
   return found;
@@ -306,7 +344,7 @@ function detectRating(raw) {
   var s = " " + norm(raw) + " ", best = 0, bi = -1;
   [1, -1].forEach(function (r) {
     RATE_KEYS[r === 1 ? 1 : "-1"].forEach(function (k) {
-      var p = s.lastIndexOf(" " + k);
+      var p = s.lastIndexOf(" " + k + " ");
       if (p > bi) { bi = p; best = r; }
     });
   });
@@ -317,7 +355,7 @@ function detectPlayer(raw) {
   ["home", "away"].forEach(function (side) {
     match[side].players.forEach(function (pl) {
       var n = norm(pl.name);
-      if (n.length >= 4 && s.indexOf(" " + n) > -1) hit = { side: side, playerId: pl.id };
+      if (!hit && n.length >= 4 && s.indexOf(" " + n + " ") > -1) hit = { side: side, playerId: pl.id };
       var m = s.match(/\b(?:el |la |dorsal |numero )(\d{1,2})\b/);
       if (!hit && m && String(pl.num) === m[1]) hit = { side: side, playerId: pl.id };
     });
@@ -929,12 +967,14 @@ function openMatches() {
         save(true); renderAll(); fillFilters(); closeModal();
         return;
       }
+      pauseActivePeriod();
       match = matches.filter(function (m) { return m.id === el.dataset.id; })[0];
       migrate(match); save(true); renderAll(); fillFilters(); closeModal();
     };
   });
   $("mmC").onclick = closeModal;
   $("mmNew").onclick = function () {
+    pauseActivePeriod();
     match = newMatch(); matches.push(match);
     save(true); renderAll(); fillFilters(); closeModal();
     toast("Partido nuevo creado");
@@ -1164,6 +1204,7 @@ $("csvSemicolon").onchange = function () { prefs.csvSemicolon = this.checked; sa
 $("expFps").onchange = function () { prefs.fps = parseFloat(this.value); save(); };
 
 $("btnNewMatch").onclick = function () {
+  pauseActivePeriod();
   match = newMatch(); matches.push(match); save(true); renderAll(); fillFilters(); toast("Partido nuevo");
 };
 $("btnDeleteMatch").onclick = function () {
@@ -1180,7 +1221,10 @@ $("filePicker").onchange = function () {
     try {
       var data = JSON.parse(r.result);
       var list = Array.isArray(data) ? data : [data];
-      list.forEach(function (m) { m.id = uid(); migrate(m); matches.push(m); });
+      var imported = list.map(function (m) { m.id = uid(); migrate(m); return m; });
+      if (!imported.length) { toast("Archivo no válido"); return; }
+      pauseActivePeriod();
+      matches = matches.concat(imported);
       match = matches[matches.length - 1];
       save(true); renderAll(); fillFilters(); toast("Importado");
     } catch (e) { toast("Archivo no válido"); }
@@ -1227,9 +1271,21 @@ document.addEventListener("keydown", function (e) {
 window.addEventListener("beforeunload", function () { save(true); });
 
 /* ---------------- arranque ---------------- */
-loadAll();
-renderAll();
-fillFilters();
+try {
+  loadAll();
+  renderAll();
+  fillFilters();
+} catch (e) {
+  /* si algo en los datos guardados sigue rompiendo el pintado pese a la
+     normalización de migrate(), no dejamos la app en blanco para siempre:
+     arrancamos con un partido nuevo y avisamos. */
+  matches = [newMatch()];
+  match = matches[0];
+  try { save(true); } catch (e2) {}
+  renderAll();
+  fillFilters();
+  toast("No se pudieron leer los partidos guardados: se ha creado uno nuevo");
+}
 
 /* En iPhone/Safari no hay Web Speech API: el botón pasa a abrir la nota
    para que se dicte con el micrófono del teclado del sistema. */
