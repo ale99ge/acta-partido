@@ -24,7 +24,18 @@ const w = dom.window;
 w.localStorage.clear();
 w.navigator.wakeLock = undefined;
 w.AudioContext = undefined;
-w.SpeechRecognition = undefined;
+
+// SpeechRecognition falso: permite simular en el bucle onresult el bug real
+// de Chrome (reenvía el mismo resultado marcado "final" varias veces con la
+// transcripción cada vez más larga) sin necesidad de un navegador de verdad.
+function FakeSpeechRecognition() {
+  this.lang = ""; this.continuous = false; this.interimResults = false; this.maxAlternatives = 1;
+  this.onstart = null; this.onspeechstart = null; this.onresult = null; this.onerror = null; this.onend = null;
+  w.__lastRec = this;
+}
+FakeSpeechRecognition.prototype.start = function () { if (this.onstart) this.onstart(); };
+FakeSpeechRecognition.prototype.stop = function () {};
+w.SpeechRecognition = FakeSpeechRecognition;
 w.confirm = () => true;
 w.alert = () => {};
 w.URL.createObjectURL = () => "blob:x";
@@ -41,7 +52,8 @@ code = code.replace(/\}\)\(\);\s*$/, `
     videoToPeriod:videoToPeriod, addEvent:addEvent, detectTags:detectTags,
     detectRating:detectRating, voiceCommand:voiceCommand, csvText:csvText,
     ytText:ytText, vttText:vttText, edlText:edlText, markerCsvText:markerCsvText,
-    rows:rows, setPeriod:setPeriod, renderAll:renderAll, save:save, prefs:function(){return prefs;} };
+    rows:rows, setPeriod:setPeriod, renderAll:renderAll, save:save, prefs:function(){return prefs;},
+    startRec:startRec, stopRec:stopRec };
 })();`);
 
 w.eval(code);
@@ -143,6 +155,42 @@ ok("hay barra de contexto de equipo", doc.querySelectorAll("#ctxBar .chip").leng
 ok("la lista de eventos tiene tarjetas", (doc.querySelectorAll("#recentList .ev").length > 0));
 ok("cada tarjeta muestra el tiempo de vídeo", doc.querySelector("#recentList .ev-vid").textContent.includes("▶"));
 ok("aviso de sincronía oculto al estar sincronizado", doc.getElementById("syncWarn").classList.contains("hidden"));
+
+console.log("\n== dictado: no duplicar notas por fragmentos crecientes ==");
+function mkResult(text, isFinal) {
+  var r = { isFinal: isFinal, length: 1 };
+  r[0] = { transcript: text };
+  return r;
+}
+var before = M.events.length;
+T.startRec();
+var rec1 = w.__lastRec;
+rec1.onspeechstart();
+// Chrome a veces reenvía el mismo índice de resultado marcado "final"
+// varias veces con la transcripción cada vez más larga antes de cerrar
+// la frase de verdad: esto no debe crear una jugada por cada envío.
+rec1.onresult({ resultIndex: 0, results: [mkResult("buen", true)] });
+rec1.onresult({ resultIndex: 0, results: [mkResult("buen cambio", true)] });
+rec1.onresult({ resultIndex: 0, results: [mkResult("buen cambio de", true)] });
+rec1.onresult({ resultIndex: 0, results: [mkResult("buen cambio de orientacion", true)] });
+T.stopRec();
+ok("una frase de un tirón crea una sola jugada", M.events.length === before + 1, M.events.length - before);
+ok("...con la frase completa, no un fragmento", M.events[M.events.length - 1].note === "Buen cambio de orientacion",
+   M.events[M.events.length - 1].note);
+
+console.log("\n== dictado: varias frases seguidas sin soltar siguen creando jugadas separadas ==");
+var before2 = M.events.length;
+T.startRec();
+var rec2 = w.__lastRec;
+rec2.onspeechstart();
+rec2.onresult({ resultIndex: 0, results: [mkResult("primera nota", true)] });
+// un índice de resultado nuevo confirma de inmediato la frase anterior
+rec2.onresult({ resultIndex: 1, results: [mkResult("primera nota", true), mkResult("segunda nota", true)] });
+T.stopRec();
+ok("dos frases sin soltar crean dos jugadas", M.events.length === before2 + 2, M.events.length - before2);
+ok("...en orden, con ambos textos completos",
+   M.events[M.events.length - 2].note === "Primera nota" && M.events[M.events.length - 1].note === "Segunda nota",
+   JSON.stringify(M.events.slice(-2).map(function (e) { return e.note; })));
 
 console.log("\n---------------------------------------");
 console.log(passes + " correctas, " + fails + " fallos");

@@ -46,12 +46,12 @@
     <div class="card sync-warn hidden" id="syncWarn">
       <strong>Sincroniza el v&iacute;deo</strong>
       <p>Indica en Ajustes el minuto exacto del v&iacute;deo en el que empieza cada parte para que cada jugada tenga tambi&eacute;n su minuto real de v&iacute;deo.</p>
+      <button class="btn ghost" id="btnGoSync">Ir a Ajustes</button>
     </div>
 
     <div class="mic-wrap">
       <button id="btnMic" class="mic" aria-label="Grabar nota de voz">
-        <span class="mic-ico">&#127908;</span>
-        <span class="mic-label">Mantener o pulsar<br>para dictar</span>
+        <span class="mic-label">Grabar nota</span>
       </button>
       <div class="mic-stamp" id="micStamp"></div>
     </div>
@@ -144,6 +144,12 @@
       <label class="switch"><input type="checkbox" id="prefAutoSave" checked> Guardar la jugada autom&aacute;ticamente al terminar de dictar</label>
       <label class="switch"><input type="checkbox" id="prefWakeLock" checked> Mantener la pantalla encendida durante el partido</label>
       <label class="switch"><input type="checkbox" id="prefBeep" checked> Se&ntilde;al sonora al empezar y acabar de dictar</label>
+      <label>Modo de grabaci&oacute;n
+        <select id="prefMicMode">
+          <option value="hold">Mantener pulsado para hablar</option>
+          <option value="toggle">Pulsar para grabar varias notas</option>
+        </select>
+      </label>
       <label>Idioma del dictado
         <select id="prefLang">
           <option value="es-ES">Espa&ntilde;ol (Espa&ntilde;a)</option>

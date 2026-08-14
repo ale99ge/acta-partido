@@ -123,7 +123,7 @@ function newMatch() {
     events: []
   };
 }
-var DEFAULT_PREFS = { autoSave: true, wakeLock: true, beep: true, lang: "es-ES", fps: 25, csvSemicolon: true };
+var DEFAULT_PREFS = { autoSave: true, wakeLock: true, beep: true, lang: "es-ES", fps: 25, csvSemicolon: true, micMode: "hold" };
 
 /* ---------------- almacenamiento ---------------- */
 var LS_MATCHES = "acta.v2.matches", LS_CUR = "acta.v2.current", LS_PREFS = "acta.v2.prefs";
@@ -406,12 +406,55 @@ function tagLabel(id) {
 
 /* ---------------- reconocimiento de voz ---------------- */
 var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-var rec = null, listening = false, keepAlive = false, stampP = null, stampE = null, micHold = false;
+var rec = null, listening = false, keepAlive = false, stampP = null, stampE = null;
 
 function speechAvailable() { return !!SR; }
 function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+/* ---- texto del botón de micro (según disponibilidad y modo elegido) ---- */
+function micIdleLabel() {
+  if (!speechAvailable()) {
+    return isIOS() ? "Pulsa y dicta con el<br>micrófono del teclado"
+                    : "Dictado no disponible<br>pulsa para escribir";
+  }
+  return prefs.micMode === "hold" ? "Grabar nota" : "Grabar notas";
+}
+function micListeningLabel() {
+  return prefs.micMode === "hold" ? "Escuchando&hellip;<br>suelta para terminar"
+                                   : "Escuchando&hellip;<br>pulsa para parar";
+}
+function paintMicLabel() {
+  $("btnMic").querySelector(".mic-label").innerHTML = listening ? micListeningLabel() : micIdleLabel();
+}
+
+/* ---- buffer de resultados finales: el motor de reconocimiento a veces
+   reenvía el mismo resultado marcado "final" varias veces con la
+   transcripción cada vez más larga antes de cerrar la frase de verdad.
+   Nos quedamos siempre con la revisión más reciente y solo confirmamos la
+   jugada cuando el texto deja de cambiar o cuando aparece contenido en un
+   resultado distinto (señal de que el anterior ya cerró). ---- */
+var finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
+var finalTimer = null;
+var FINAL_STABLE_MS = 500;
+function resetFinalBuf() {
+  clearTimeout(finalTimer); finalTimer = null;
+  finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
+}
+function commitFinalBuf() {
+  clearTimeout(finalTimer); finalTimer = null;
+  if (finalBuf.idx === -1) return;
+  var txt = finalBuf.text.trim();
+  var savedP = finalBuf.stampP, savedE = finalBuf.stampE;
+  finalBuf = { idx: -1, text: "", stampP: null, stampE: null };
+  if (!txt) return;
+  if (!voiceCommand(txt)) {
+    var t = txt.charAt(0).toUpperCase() + txt.slice(1);
+    if (prefs.autoSave) addEvent(t, savedE, savedP);
+    else pendingDraft(t, savedE, savedP);
+  }
 }
 
 function startRec() {
@@ -428,8 +471,9 @@ function startRec() {
   rec.lang = prefs.lang; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
   rec.onstart = function () {
     listening = true; keepAlive = true;
+    resetFinalBuf();
     $("btnMic").classList.add("rec");
-    $("btnMic").querySelector(".mic-label").innerHTML = "Escuchando&hellip;<br>pulsa para parar";
+    paintMicLabel();
     setTranscript("", true);
     beep(1100, 70);
   };
@@ -443,17 +487,17 @@ function startRec() {
     var interim = "";
     for (var i = ev.resultIndex; i < ev.results.length; i++) {
       var r = ev.results[i];
+      if (finalBuf.idx !== -1 && i !== finalBuf.idx) commitFinalBuf();
       if (r.isFinal) {
-        var txt = r[0].transcript.trim();
-        if (txt) {
-          if (!voiceCommand(txt)) {
-            var t = txt.charAt(0).toUpperCase() + txt.slice(1);
-            if (prefs.autoSave) addEvent(t, stampE, stampP);
-            else pendingDraft(t, stampE, stampP);
-          }
+        if (finalBuf.idx === -1) {
+          finalBuf.idx = i;
+          finalBuf.stampP = stampP; finalBuf.stampE = stampE;
+          stampP = null; stampE = null;
+          $("micStamp").textContent = "";
         }
-        stampP = null; stampE = null;
-        $("micStamp").textContent = "";
+        finalBuf.text = r[0].transcript;
+        clearTimeout(finalTimer);
+        finalTimer = setTimeout(commitFinalBuf, FINAL_STABLE_MS);
       } else interim += r[0].transcript;
     }
     setTranscript(interim, !interim);
@@ -473,16 +517,18 @@ function startRec() {
     stopRec();
   };
   rec.onend = function () {
+    commitFinalBuf();
     if (keepAlive && listening) { try { rec.start(); } catch (err) {} }
     else stopRec();
   };
   try { rec.start(); } catch (err) {}
 }
 function stopRec() {
+  commitFinalBuf();
   listening = false; keepAlive = false;
   if (rec) { try { rec.stop(); } catch (e) {} }
   $("btnMic").classList.remove("rec");
-  $("btnMic").querySelector(".mic-label").innerHTML = "Mantener o pulsar<br>para dictar";
+  paintMicLabel();
   $("micStamp").textContent = "";
   setTranscript("", true);
   highlightTags("");
@@ -679,6 +725,7 @@ function renderSetup() {
   $("prefAutoSave").checked = prefs.autoSave;
   $("prefWakeLock").checked = prefs.wakeLock;
   $("prefBeep").checked = prefs.beep;
+  $("prefMicMode").value = prefs.micMode;
   $("prefLang").value = prefs.lang;
   $("csvSemicolon").checked = prefs.csvSemicolon;
   $("expFps").value = String(prefs.fps);
@@ -784,6 +831,32 @@ function modalInfo(title, html) {
     '<div class="modal-actions"><button class="btn" id="mOk">Entendido</button></div>');
   $("mOk").onclick = closeModal;
 }
+/* cierra cualquier modal abierto, va a Ajustes y enfoca/resalta el campo
+   "empieza en el vídeo" de la primera parte que falte por sincronizar */
+function focusSyncSetting() {
+  closeModal();
+  var idx = 0;
+  for (var i = 0; i < match.periods.length; i++) {
+    if (match.periods[i].videoStartSec == null) { idx = i; break; }
+  }
+  showView("setup");
+  setTimeout(function () {
+    var input = document.querySelector('#periodsCfg input[data-i="' + idx + '"][data-k="vs"]');
+    if (!input) return;
+    input.scrollIntoView({ block: "center", behavior: "smooth" });
+    input.focus();
+    input.classList.add("flash");
+    setTimeout(function () { input.classList.remove("flash"); }, 1500);
+  }, 60);
+}
+function syncMissingModal() {
+  openModal(
+    "<h2>Falta la sincronía</h2><p>Indica en Ajustes en qué minuto del vídeo empieza cada parte.</p>" +
+    '<div class="modal-actions"><button class="btn ghost" id="fsC">Cerrar</button><button class="btn" id="fsGo">Ir a Ajustes</button></div>'
+  );
+  $("fsC").onclick = closeModal;
+  $("fsGo").onclick = focusSyncSetting;
+}
 function openClockSetter() {
   var p = activeP(), e = elapsedNow(p);
   openModal(
@@ -832,10 +905,7 @@ function openManualNote(fromMic) {
   setTimeout(function () { $("mnT").focus(); }, 60);
 }
 function openAtVideo() {
-  if (!isSynced()) {
-    modalInfo("Falta la sincronía", "<p>Primero indica en Ajustes en qué minuto del vídeo empieza cada parte.</p>");
-    return;
-  }
+  if (!isSynced()) { syncMissingModal(); return; }
   openModal(
     "<h2>Añadir por minuto de vídeo</h2>" +
     '<label>Tiempo del vídeo original (hh:mm:ss)<input type="text" id="mvV" placeholder="1:12:40"></label>' +
@@ -1041,6 +1111,14 @@ function xlsText() {
 function markerRows() {
   return rows().filter(function (r) { return r.vsec != null; });
 }
+/* true si ya hay marcadores para exportar; si no, explica por qué y, si el
+   problema se arregla en Ajustes (falta sincronizar alguna parte), lleva allí */
+function requireMarkers() {
+  if (markerRows().length) return true;
+  if (!isSynced()) syncMissingModal();
+  else toast("No hay jugadas registradas en una parte sincronizada");
+  return false;
+}
 function markerTitle(r) {
   var t = r.min + " " + (r.etiquetas ? "[" + r.etiquetas.replace(/ \| /g, ",") + "] " : "") + r.nota;
   return t.replace(/\s+/g, " ").slice(0, 110);
@@ -1107,39 +1185,38 @@ function reportText() {
 /* ============================================================
    EVENTOS DE INTERFAZ
    ============================================================ */
+function showView(name) {
+  [].forEach.call(document.querySelectorAll(".tab"), function (t) { t.classList.toggle("active", t.dataset.view === name); });
+  [].forEach.call(document.querySelectorAll(".view"), function (v) { v.classList.toggle("active", v.id === "view-" + name); });
+  window.scrollTo(0, 0);
+  if (name === "events") { fillFilters(); renderEvents(); }
+  if (name === "export") renderSummary();
+}
 [].forEach.call(document.querySelectorAll(".tab"), function (t) {
-  t.onclick = function () {
-    [].forEach.call(document.querySelectorAll(".tab"), function (x) { x.classList.remove("active"); });
-    [].forEach.call(document.querySelectorAll(".view"), function (x) { x.classList.remove("active"); });
-    t.classList.add("active");
-    $("view-" + t.dataset.view).classList.add("active");
-    window.scrollTo(0, 0);
-    if (t.dataset.view === "events") { fillFilters(); renderEvents(); }
-    if (t.dataset.view === "export") renderSummary();
-  };
+  t.onclick = function () { showView(t.dataset.view); };
 });
 $("btnClock").onclick = toggleClock;
 $("btnMatches").onclick = openMatches;
 $("btnManual").onclick = openManualNote;
 $("btnAtVideo").onclick = openAtVideo;
+$("btnGoSync").onclick = focusSyncSetting;
 
-/* micrófono: pulsación normal alterna; mantener pulsado graba mientras se mantiene */
-var holdTimer = null;
-$("btnMic").addEventListener("pointerdown", function () {
-  if (!SR) return;
-  micHold = false;
-  holdTimer = setTimeout(function () {
-    micHold = true;
-    if (!listening) startRec();
-  }, 380);
+/* micrófono: el gesto activo depende de prefs.micMode, no de cuánto se
+   mantenga pulsado (ver preferencia "Modo de grabación" en Ajustes) */
+var MIC = $("btnMic");
+MIC.addEventListener("pointerdown", function (e) {
+  if (!SR || prefs.micMode !== "hold") return;
+  try { MIC.setPointerCapture(e.pointerId); } catch (err) {}
+  if (!listening) startRec();
 });
-$("btnMic").addEventListener("pointerup", function () {
+MIC.addEventListener("pointerup", function () {
   if (!SR) { startRec(); return; }
-  clearTimeout(holdTimer);
-  if (micHold) { if (listening) setTimeout(stopRec, 900); }
+  if (prefs.micMode === "hold") { if (listening) setTimeout(stopRec, 900); }
   else { listening ? stopRec() : startRec(); }
 });
-$("btnMic").addEventListener("pointercancel", function () { clearTimeout(holdTimer); });
+MIC.addEventListener("pointercancel", function () {
+  if (SR && prefs.micMode === "hold" && listening) stopRec();
+});
 
 $("btnAddPeriod").onclick = function () {
   var n = match.periods.length + 1;
@@ -1199,6 +1276,11 @@ $("newTag").onkeydown = function (e) { if (e.key === "Enter") $("btnAddTag").cli
 $("prefAutoSave").onchange = function () { prefs.autoSave = this.checked; save(); };
 $("prefWakeLock").onchange = function () { prefs.wakeLock = this.checked; save(); if (this.checked) requestWakeLock(); };
 $("prefBeep").onchange = function () { prefs.beep = this.checked; save(); };
+$("prefMicMode").onchange = function () {
+  prefs.micMode = this.value; save();
+  if (listening) stopRec();
+  paintMicLabel();
+};
 $("prefLang").onchange = function () { prefs.lang = this.value; save(); if (listening) { stopRec(); setTimeout(startRec, 300); } };
 $("csvSemicolon").onchange = function () { prefs.csvSemicolon = this.checked; save(); };
 $("expFps").onchange = function () { prefs.fps = parseFloat(this.value); save(); };
@@ -1239,19 +1321,19 @@ $("btnCsv").onclick = function () { download(baseName() + ".csv", "text/csv;char
 $("btnXls").onclick = function () { download(baseName() + ".xls", "application/vnd.ms-excel", xlsText()); };
 $("btnCopyTable").onclick = function () { copyText(reportText()); toast("Tabla copiada"); };
 $("btnVtt").onclick = function () {
-  if (!markerRows().length) { toast("Necesitas sincronizar el vídeo"); return; }
+  if (!requireMarkers()) return;
   download(baseName() + "-capitulos.vtt", "text/vtt;charset=utf-8", vttText());
 };
 $("btnYt").onclick = function () {
-  if (!markerRows().length) { toast("Necesitas sincronizar el vídeo"); return; }
+  if (!requireMarkers()) return;
   download(baseName() + "-capitulos.txt", "text/plain;charset=utf-8", ytText());
 };
 $("btnMarkerCsv").onclick = function () {
-  if (!markerRows().length) { toast("Necesitas sincronizar el vídeo"); return; }
+  if (!requireMarkers()) return;
   download(baseName() + "-marcadores.csv", "text/csv;charset=utf-8", markerCsvText());
 };
 $("btnEdl").onclick = function () {
-  if (!markerRows().length) { toast("Necesitas sincronizar el vídeo"); return; }
+  if (!requireMarkers()) return;
   download(baseName() + "-marcadores.edl", "text/plain;charset=utf-8", edlText());
 };
 $("btnJson").onclick = function () {
@@ -1288,13 +1370,9 @@ try {
 }
 
 /* En iPhone/Safari no hay Web Speech API: el botón pasa a abrir la nota
-   para que se dicte con el micrófono del teclado del sistema. */
-if (!speechAvailable()) {
-  $("btnMic").querySelector(".mic-ico").textContent = isIOS() ? "⌨️" : "✍️";
-  $("btnMic").querySelector(".mic-label").innerHTML = isIOS()
-    ? "Pulsa y dicta con el<br>micrófono del teclado"
-    : "Dictado no disponible<br>pulsa para escribir";
-}
+   para que se dicte con el micrófono del teclado del sistema. paintMicLabel()
+   ya sabe elegir el texto correcto según disponibilidad y modo elegido. */
+paintMicLabel();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
